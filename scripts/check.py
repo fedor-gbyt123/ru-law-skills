@@ -26,7 +26,10 @@ OFFICIAL = ("pravo.gov.ru", "consultant.ru", "garant.ru", "vsrf.ru", "cbr.ru", "
             "fas.gov.ru", "rospatent.gov.ru", "fips.ru", "nalog.gov.ru", "rostrud.gov.ru",
             "arbitr.ru", "government.ru", "kremlin.ru", "sozd.duma.gov.ru")
 NORMS_HEADER = ["норма", "суть", "источник", "редакция", "проверено"]
-STALE_DAYS = 180
+STALE_DAYS = 90          # правило 3: старше 3 месяцев — перепроверять
+SOON_DAYS = 90           # будущие изменения в ближайшие 3 месяца — предупреждать
+FUTURE_RE = re.compile(r"будущие изм[^|]*", re.I)
+RU_DATE_RE = re.compile(r"\b(\d{2})\.(\d{2})\.(\d{4})\b")
 
 errors: list[str] = []
 warnings: list[str] = []
@@ -103,7 +106,18 @@ def check_norms(skill: str, path: Path, release: bool) -> int:
         if checked > today:
             err(skill, f"norms.md, «{cells[0]}»: дата проверки в будущем")
         elif (today - checked).days > STALE_DAYS:
-            warn(skill, f"norms.md, «{cells[0]}»: проверено больше {STALE_DAYS} дней назад, пересверить")
+            warn(skill, f"{path.name}, «{cells[0]}»: проверено больше {STALE_DAYS} дней назад, пересверить")
+        future = FUTURE_RE.search(cells[3])
+        if future:
+            for d, m_, y in RU_DATE_RE.findall(future.group(0)):
+                try:
+                    when = dt.date(int(y), int(m_), int(d))
+                except ValueError:
+                    continue
+                if when <= today and checked < when:
+                    warn(skill, f"{path.name}, «{cells[0]}»: изменения с {when} уже вступили, а сверено {checked} — пересверить")
+                elif today < when <= today + dt.timedelta(days=SOON_DAYS):
+                    warn(skill, f"{path.name}, «{cells[0]}»: изменения вступают {when} — пересверить после этой даты")
     if count == 0:
         err(skill, "norms.md: таблица пустая")
     return count
