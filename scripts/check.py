@@ -123,6 +123,65 @@ def check_norms(skill: str, path: Path, release: bool) -> int:
     return count
 
 
+LAW_ID_RE = re.compile(r"cons_doc_LAW_(\d+)")
+NORM_HEAD_RE = re.compile(r"^(.+?)\s+ст\.\s*(.+)$")
+
+
+def _law_key(norm: str) -> tuple[str, ...]:
+    """Группа «один закон» для проверки единого номера документа."""
+    m = NORM_HEAD_RE.match(norm)
+    if not m:
+        return (norm.strip(),)
+    law = m.group(1).strip()
+    rest = m.group(2)
+    if law == "ГК РФ":
+        num = re.match(r"^([\d.]+)", rest)
+        if num:
+            n = float(num.group(1))
+            part = "ч.1" if n < 454 else "ч.2" if n < 1110 else "ч.3" if n < 1225 else "ч.4"
+            return ("ГК РФ", part)
+    return (law,)
+
+
+def cross_check() -> None:
+    """Одна норма в разных справочниках — одинаковые ссылки; в одном файле
+    статьи одного закона — один номер документа КонсультантПлюс."""
+    per_norm: dict[str, dict[str, set[str]]] = {}   # norm -> skill -> set(first URLs)
+    per_file: dict[tuple[str, tuple[str, ...]], set[str]] = {}  # (skill, law_key) -> docids
+    for skill_dir in sorted(p for p in SKILLS.iterdir() if p.is_dir()):
+        path = skill_dir / "references" / "norms.md"
+        if not path.exists():
+            continue
+        skill = skill_dir.name
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip().startswith("|") or line.strip("|").split("|")[0].strip() in ("", "Норма"):
+                continue
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            if len(cells) < 3:
+                continue
+            norm, urls_cell = cells[0], cells[2]
+            first = urls_cell.split()[0] if urls_cell.split() else ""
+            if not first.startswith("http"):
+                continue
+            per_norm.setdefault(norm, {}).setdefault(skill, set()).add(first)
+            doc_ids = set()
+            first_doc = LAW_ID_RE.search(urls_cell)
+            if first_doc:
+                doc_ids = {first_doc.group(1)}
+            if doc_ids:
+                per_file.setdefault((skill, _law_key(norm)), set()).update(doc_ids)
+    for norm, by_skill in sorted(per_norm.items()):
+        all_urls: set[str] = set()
+        for urls in by_skill.values():
+            all_urls.update(urls)
+        if len(all_urls) > 1:
+            where = ", ".join(f"{s}: {sorted(u)}" for s, u in sorted(by_skill.items()))
+            err("cross", f"норма «{norm}» ссылается на разные источники — {where}")
+    for (skill, law_key), doc_ids in sorted(per_file.items()):
+        if len(doc_ids) > 1:
+            warn(skill, f"norms.md, «{' / '.join(law_key)}»: статьи одного закона ссылаются на разные документы КонсультантПлюс (LAW_{', LAW_'.join(sorted(doc_ids))})")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--fix", action="store_true")
@@ -185,6 +244,8 @@ def main() -> int:
             if practice.exists():
                 check_norms(skill, practice, True)
         report.append((skill, "заготовка" if draft else "готов", norms, lines))
+
+    cross_check()
 
     print(f"{'скилл':<22}{'статус':<12}{'норм':>6}{'строк':>7}")
     for skill, status, norms, lines in report:
